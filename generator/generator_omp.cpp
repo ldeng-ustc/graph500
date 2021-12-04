@@ -34,9 +34,10 @@ int main(int argc, char* argv[]) {
     options.add_options()
         ("n,log_numverts", "log2(#vertices)", cxxopts::value<int>()->default_value("16"))
         ("m,nedges_per_verts", "#edges per vertex", cxxopts::value<int>()->default_value("16"))
-        ("o,outdir", "output directory", cxxopts::value<string>()->default_value("./"))
-        ("file", "output file {0}, {1}, {2} will be replaced to n, m, and format (txt or bin)", 
-                    cxxopts::value<string>()->default_value("Kron{0}-{1}.{2}"))
+        ("o,outdir", "output directory, {0}, {1}, {2} will be replaced by n, m, and format (txt or bin)",
+                    cxxopts::value<string>()->default_value("/data/Kron/Kron{0}-{1}/"))
+        ("file", "output file, {0}, {1}, {2} will be replaced by n, m, and format (txt or bin)", 
+                    cxxopts::value<string>()->default_value("edges.{2}"))
         ("f,format", "output format (0: stdout, 1:binary, 2:text)", cxxopts::value<int>()->default_value("0"))
         ("S,short", "use 32bit int as vertex ID in binary format")
         ("seed1", "user seed 1", cxxopts::value<uint64_t>()->default_value("1"))
@@ -71,9 +72,10 @@ int main(int argc, char* argv[]) {
 
     cout << fmt::format("{} edges generated in {}s ({} Medges/s)", actual_nedges, time_taken, 1e-6 * actual_nedges / time_taken  ) << endl;
 
-    string format_string = opt["file"].as<string>();
-    string filename;
-    fs::path outdir = opt["outdir"].as<string>();
+    string file_format = opt["file"].as<string>();
+    string dir_format = opt["outdir"].as<string>();
+    fs::path outdir;
+    fs::path filename;
     fs::path fullpath;
     switch (opt["format"].as<int>()) {
     case 0: // stdout
@@ -85,9 +87,10 @@ int main(int argc, char* argv[]) {
         break;
     case 1: // binary 
     {
-        fs::create_directories(outdir);
-        filename = fmt::format(format_string, log_numverts, nedges_per_verts, "bin");
+        outdir = fmt::format(dir_format, log_numverts, nedges_per_verts, "bin");
+        filename = fmt::format(file_format, log_numverts, nedges_per_verts, "bin");
         fullpath = outdir / filename;
+        fs::create_directories(outdir);
 
         bool short_vid = opt["short"].as<bool>();
         size_t vsize = short_vid ? sizeof(uint32_t) : sizeof(uint64_t);
@@ -142,10 +145,11 @@ int main(int argc, char* argv[]) {
     }
     case 2: // text
     {
-        FILE *file = fopen(fullpath.c_str(), "w");
-        fs::create_directories(outdir);
-        filename = fmt::format(format_string, log_numverts, nedges_per_verts, "txt");
+        outdir = fmt::format(dir_format, log_numverts, nedges_per_verts, "txt");
+        filename = fmt::format(file_format, log_numverts, nedges_per_verts, "txt");
         fullpath = outdir / filename;
+        fs::create_directories(outdir);
+        FILE *file = fopen(fullpath.c_str(), "w");
         for (int i = 0; i < actual_nedges; i++) {
             int64_t v[2];
             v[0] = get_v0_from_edge(result + i);
