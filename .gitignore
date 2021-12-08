@@ -1,2 +1,4 @@
 *~
 src/graph500_*
+*.o
+generator/generator_omp

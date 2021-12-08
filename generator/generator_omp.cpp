@@ -44,7 +44,7 @@ void write_to_file_binary(fs::path path, packed_edge* result, size_t nedges) {
     size_t fsize = esize * nedges;
     int fd = open64(path.c_str(), O_WRONLY | O_CREAT, 0664);
     fs::resize_file(path, fsize);
-    VertexType *file = static_cast<VertexType*>(mmap(NULL, fsize, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0));
+    VertexType *file = static_cast<VertexType*>(mmap(NULL, fsize, PROT_WRITE, MAP_SHARED, fd, 0));
     if(file == MAP_FAILED) {
         cout << "mmap failed." << endl;
         cout << std::strerror(errno) << endl;
@@ -168,6 +168,8 @@ int main(int argc, char* argv[]) {
         if(opt["info"].as<bool>()) {
             cout << fmt::format("{} edges written in {}s ({} Medges/s)", nblock_edges, time_taken, 1e-6 * nblock_edges / time_taken  ) << endl;
         }
+
+        xfree(edges, block_size * sizeof(packed_edge));
     }
 
     return 0;
