@@ -42,9 +42,14 @@ void write_to_file_binary(fs::path path, packed_edge* result, size_t nedges) {
     size_t vsize = sizeof(VertexType);
     size_t esize = 2ull * vsize;
     size_t fsize = esize * nedges;
-    int fd = open64(path.c_str(), O_WRONLY | O_CREAT, 0664);
+    int fd = open(path.c_str(), O_RDWR | O_CREAT, 0664);
+    if(fd == -1) {
+        cout << "open failed." << endl;
+        cout << std::strerror(errno) << endl;
+        exit(errno);
+    }
     fs::resize_file(path, fsize);
-    VertexType *file = static_cast<VertexType*>(mmap(NULL, fsize, PROT_WRITE, MAP_SHARED, fd, 0));
+    VertexType *file = static_cast<VertexType*>(mmap(NULL, fsize, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0));
     if(file == MAP_FAILED) {
         cout << "mmap failed." << endl;
         cout << std::strerror(errno) << endl;
