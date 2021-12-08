@@ -16,16 +16,64 @@
 #include <cstdio>
 
 #include <unistd.h>
-#include "fcntl.h"
 #include <omp.h>
 
+#include "fcntl.h"
+#include "sys/mman.h"
 #include "fmt/format.h"
 #include "cxxopts.hpp"
 
 #include "make_graph.h"
+#include "utils.h"
 
 using namespace std;
 namespace fs = std::filesystem;
+
+void write_to_stdout(packed_edge* result, size_t m) {
+    for (size_t i = 0; i < m; i++) {
+        int64_t v0 = get_v0_from_edge(result + i);
+        int64_t v1 = get_v1_from_edge(result + i);
+        cout << fmt::format("{:10} {:10}", v0, v1) << endl;
+    }
+}
+
+template<typename VertexType>
+void write_to_file_binary(fs::path path, packed_edge* result, size_t nedges) {
+    size_t vsize = sizeof(VertexType);
+    size_t esize = 2ull * vsize;
+    size_t fsize = esize * nedges;
+    int fd = open64(path.c_str(), O_WRONLY | O_CREAT, 0664);
+    fs::resize_file(path, fsize);
+    VertexType *file = static_cast<VertexType*>(mmap(NULL, fsize, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0));
+    if(file == MAP_FAILED) {
+        cout << "mmap failed." << endl;
+        cout << std::strerror(errno) << endl;
+        exit(errno);
+    }
+    // parallel write to file.
+    const size_t LOGN_BLOCK_SZ = 22;
+    const size_t BLOCK_SZ = 1 << LOGN_BLOCK_SZ;
+
+    #pragma omp parallel for schedule(static, BLOCK_SZ)
+    for(size_t i=0; i<nedges; i++) {
+        *(file + 2*i) = static_cast<VertexType>(get_v0_from_edge(result + i));
+        *(file + 2*i + 1) = static_cast<VertexType>(get_v1_from_edge(result + i));
+    }
+    munmap(file, fsize);
+    close(fd);
+}
+
+void write_to_file_text(fs::path path, packed_edge* result, size_t nedges) {
+    FILE *file = fopen(path.c_str(), "w");
+    for (size_t i = 0; i < nedges; i++) {
+        int64_t v[2];
+        v[0] = get_v0_from_edge(result + i);
+        v[1] = get_v1_from_edge(result + i);
+        fputs(fmt::format("{} {}\n", v[0], v[1]).c_str(), file);
+    }
+    fclose(file);
+}
+
 int main(int argc, char* argv[]) {
     cxxopts::Options options("KronGenerator", "Generate Kron Graph with 2^n vertices and m*2^n edges");
     options
@@ -34,12 +82,16 @@ int main(int argc, char* argv[]) {
     options.add_options()
         ("n,log_numverts", "log2(#vertices)", cxxopts::value<int>()->default_value("16"))
         ("m,nedges_per_verts", "#edges per vertex", cxxopts::value<int>()->default_value("16"))
-        ("o,outdir", "output directory, {0}, {1}, {2} will be replaced by n, m, and format (txt or bin)",
-                    cxxopts::value<string>()->default_value("/data/Kron/Kron{0}-{1}/"))
-        ("file", "output file, {0}, {1}, {2} will be replaced by n, m, and format (txt or bin)", 
-                    cxxopts::value<string>()->default_value("edges.{2}"))
+        ("o,path", "output file path, {n} is the wildcards and pass to the fmt::format, replacement rule: \n"
+                    "{0}: log_numverts\n{1}: nedges_per_verts\n"
+                    "{2}: data format, 'txt' for text, 'bin' for binary\n"
+                    "{3}: file number, necessary when graph is large than filesize",
+                    cxxopts::value<string>()->default_value("/data/Kron/Kron{0}-{1}/block-{3:02}.{2}"))
+        ("b,log_blocksize", "max number of edges be generated in a iteration, must fit in memory, also the max single file size",
+                    cxxopts::value<int>()->default_value("30"))
         ("f,format", "output format (0: stdout, 1:binary, 2:text)", cxxopts::value<int>()->default_value("0"))
         ("S,short", "use 32bit int as vertex ID in binary format")
+        ("v,info", "show debug messages")
         ("seed1", "user seed 1", cxxopts::value<uint64_t>()->default_value("1"))
         ("seed2", "user seed 2", cxxopts::value<uint64_t>()->default_value("2"))
         ("h,help", "print usage")
@@ -52,119 +104,66 @@ int main(int argc, char* argv[]) {
         cout << fmt::format("Running in arguments:\n{}", opt.arguments_string()) << endl;
     }
 
+    string path_format = opt["path"].as<string>();
     int log_numverts = opt["n"].as<int>();
     int64_t nedges_per_verts = opt["m"].as<int>();
     int64_t desired_nedges = nedges_per_verts << log_numverts;
     int64_t seed1 = opt["seed1"].as<uint64_t>();
     int64_t seed2 = opt["seed2"].as<uint64_t>();
+    int64_t block_size = 1l << opt["log_blocksize"].as<int>();
+    int64_t nblocks = desired_nedges / block_size + (desired_nedges % block_size != 0);
 
+    uint_fast32_t seed[5];
+    make_mrg_seed(seed1, seed2, seed);
 
-    int64_t actual_nedges;
-    packed_edge* result;
+    for(int64_t i=0; i < nblocks; i++) {
+        int64_t start_edge = i * block_size;
+        int64_t end_edge = min((i+1)*block_size, desired_nedges);
+        size_t nblock_edges = static_cast<size_t>(end_edge - start_edge);
+        packed_edge* edges = (packed_edge*)xmalloc(block_size * sizeof(packed_edge));
 
-    /* Start of graph generation timing */
-    double time_taken = omp_get_wtime();
+        /* Start of graph generation timing */
+        double time_taken = omp_get_wtime();
+        generate_kronecker_range(seed, log_numverts, start_edge, end_edge, edges);
+        time_taken = omp_get_wtime() - time_taken;
+        /* End of graph generation timing */
 
-    make_graph(log_numverts, desired_nedges, seed1, seed2, &actual_nedges, &result);
-
-    time_taken = omp_get_wtime() - time_taken;
-    /* End of graph generation timing */
-
-    cout << fmt::format("{} edges generated in {}s ({} Medges/s)", actual_nedges, time_taken, 1e-6 * actual_nedges / time_taken  ) << endl;
-
-    string file_format = opt["file"].as<string>();
-    string dir_format = opt["outdir"].as<string>();
-    fs::path outdir;
-    fs::path filename;
-    fs::path fullpath;
-    switch (opt["format"].as<int>()) {
-    case 0: // stdout
-        for (int i = 0; i < actual_nedges; i++) {
-            int64_t v0 = get_v0_from_edge(result + i);
-            int64_t v1 = get_v1_from_edge(result + i);
-            cout << fmt::format("{:10}  {:10}", v0, v1) << endl;
+        if(opt["info"].as<bool>()) {
+            cout << fmt::format("{} edges generated in {}s ({} Medges/s)", nblock_edges, time_taken, 1e-6 * nblock_edges / time_taken  ) << endl;
         }
-        break;
-    case 1: // binary 
-    {
-        outdir = fmt::format(dir_format, log_numverts, nedges_per_verts, "bin");
-        filename = fmt::format(file_format, log_numverts, nedges_per_verts, "bin");
-        fullpath = outdir / filename;
-        fs::create_directories(outdir);
 
-        bool short_vid = opt["short"].as<bool>();
-        size_t vsize = short_vid ? sizeof(uint32_t) : sizeof(uint64_t);
-        size_t esize = 2ull * vsize;
-        size_t fsize = esize * static_cast<size_t>(actual_nedges);
-
-        int fd = open64(fullpath.c_str(), O_WRONLY | O_CREAT, 0664);
-        fs::resize_file(fullpath, fsize);
-
-        // parallel write to file.
-        const size_t LOGN_BLOCK_SZ = 22;
-        const size_t BLOCK_SZ = 1 << LOGN_BLOCK_SZ;
-        size_t nblocks = max(actual_nedges >> LOGN_BLOCK_SZ, 1l);
-
-        #pragma omp parallel for
-        for(size_t b = 0; b < nblocks; b++) {
-            size_t begin_edge = b * BLOCK_SZ;
-            size_t end_edge = min( (b + 1) * BLOCK_SZ, static_cast<size_t>(actual_nedges));
-            size_t pos = begin_edge * esize;
-            //cout << fmt::format("writing block {:4}, start position: {:14}", b, pos) << endl;
-            
-            const int BUFFER_SIZE = 1024 * 1024;
-            auto buffer = make_unique<uint64_t[]>(BUFFER_SIZE);
-            int32_t *buffer32 = (int32_t*)(buffer.get());
-            size_t n = short_vid? 2*BUFFER_SIZE : BUFFER_SIZE;
-            size_t p = 0;
-            for (size_t i = begin_edge; i < end_edge; i++) {
-                int64_t v[2];
-                v[0] = get_v0_from_edge(result + i);
-                v[1] = get_v1_from_edge(result + i);
-                if(opt["short"].as<bool>()) {
-                    uint32_t v_short[2];
-                    v_short[0] = static_cast<uint32_t>(v[0]);
-                    v_short[1] = static_cast<uint32_t>(v[1]);
-                    buffer32[p++] = v_short[0];
-                    buffer32[p++] = v_short[1];
-                } else {
-                    buffer[p++] = v[0];
-                    buffer[p++] = v[1];
-                }
-                if(p == n) {
-                    pos += pwrite64(fd, buffer.get(), BUFFER_SIZE * sizeof(int64_t), pos);
-                    p = 0;
-                }
+        time_taken = omp_get_wtime();
+        fs::path path;
+        switch (opt["format"].as<int>()) {
+        case 0: // stdout
+            write_to_stdout(edges, nblock_edges);
+            break;
+        case 1: // binary
+            path = fmt::format(path_format, log_numverts, nedges_per_verts, "bin", i);
+            fs::create_directories(path.parent_path());
+            if(opt["short"].as<bool>()){
+                write_to_file_binary<uint32_t>(path, edges, nblock_edges);
+            } else {
+                write_to_file_binary<int64_t>(path, edges, nblock_edges);
             }
-            if(p != 0){
-                p = short_vid ? p/2 : p;
-                pos += pwrite64(fd, buffer.get(), p * sizeof(int64_t), pos);
-            }
+            break;
+        case 2: // text
+            path = fmt::format(path_format, log_numverts, nedges_per_verts, "txt", i);
+            fs::create_directories(path.parent_path());
+            write_to_file_text(path, edges, nblock_edges);
+            break;
+        default:
+            cout << "wrong format." << endl;
+            cout << options.help() << endl;
+            break;
         }
-        break;
-    }
-    case 2: // text
-    {
-        outdir = fmt::format(dir_format, log_numverts, nedges_per_verts, "txt");
-        filename = fmt::format(file_format, log_numverts, nedges_per_verts, "txt");
-        fullpath = outdir / filename;
-        fs::create_directories(outdir);
-        FILE *file = fopen(fullpath.c_str(), "w");
-        for (int i = 0; i < actual_nedges; i++) {
-            int64_t v[2];
-            v[0] = get_v0_from_edge(result + i);
-            v[1] = get_v1_from_edge(result + i);
-            fputs(fmt::format("{} {}\n", v[0], v[1]).c_str(), file);
-        }
-        break;
-    }
-    default:
-        cout << "wrong format." << endl;
-        cout << options.help() << endl;
-        break;
-    }
+        time_taken = omp_get_wtime() - time_taken;
+        /* End of graph writing timing */
 
-    free(result);
+        if(opt["info"].as<bool>()) {
+            cout << fmt::format("{} edges written in {}s ({} Medges/s)", nblock_edges, time_taken, 1e-6 * nblock_edges / time_taken  ) << endl;
+        }
+    }
 
     return 0;
 }
