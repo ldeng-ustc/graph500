@@ -100,6 +100,7 @@ int main(int argc, char* argv[]) {
     auto opt = options.parse(argc, argv);
     if(opt.count("help")) {
         cout << options.help() << endl;
+        exit(0);
     } else {
         cout << fmt::format("Running in arguments:\n{}", opt.arguments_string()) << endl;
     }
@@ -121,6 +122,10 @@ int main(int argc, char* argv[]) {
         int64_t end_edge = min((i+1)*block_size, desired_nedges);
         size_t nblock_edges = static_cast<size_t>(end_edge - start_edge);
         packed_edge* edges = (packed_edge*)xmalloc(block_size * sizeof(packed_edge));
+
+        if(opt["info"].as<bool>()) {
+            cout << fmt::format("Generating block {}, range [{}, {})", i, start_edge, end_edge) << endl;
+        }
 
         /* Start of graph generation timing */
         double time_taken = omp_get_wtime();
