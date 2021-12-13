@@ -85,7 +85,7 @@ int main(int argc, char* argv[]) {
         .positional_help("[n] [m] [output_file]")
         .show_positional_help();
     options.add_options()
-        ("n,log_numverts", "log2(#vertices)", cxxopts::value<int>()->default_value("16"))
+        ("n,log_numverts", "log2(#vertices)", cxxopts::value<int>())
         ("m,nedges_per_verts", "#edges per vertex", cxxopts::value<int>()->default_value("16"))
         ("o,path", "output file path, {n} is the wildcards and pass to the fmt::format, replacement rule: \n"
                     "{0}: log_numverts\n{1}: nedges_per_verts\n"
@@ -103,7 +103,7 @@ int main(int argc, char* argv[]) {
         ;
     options.parse_positional({"n", "m", "o"});
     auto opt = options.parse(argc, argv);
-    if(opt.count("help")) {
+    if(opt.count("help") || !opt.count("n")) {
         cout << options.help() << endl;
         exit(0);
     } else {
