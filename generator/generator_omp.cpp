@@ -38,18 +38,24 @@ void write_to_stdout(packed_edge* result, size_t m) {
 }
 
 template<typename VertexType>
-void write_to_file_binary(fs::path path, packed_edge* result, size_t nedges) {
-    size_t vsize = sizeof(VertexType);
-    size_t esize = 2ull * vsize;
-    size_t fsize = esize * nedges;
+void write_to_file_binary(fs::path path, packed_edge* result, size_t nedges, bool append) {
     int fd = open(path.c_str(), O_RDWR | O_CREAT, 0664);
     if(fd == -1) {
         cout << "open failed." << endl;
         cout << std::strerror(errno) << endl;
         exit(errno);
     }
-    fs::resize_file(path, fsize);
-    VertexType *file = static_cast<VertexType*>(mmap(NULL, fsize, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0));
+
+    size_t vsize = sizeof(VertexType);
+    size_t esize = 2ull * vsize;
+    size_t fsize = esize * nedges;
+    size_t off = 0;
+    if(append) {
+        off = fs::file_size(path);
+    }
+    fs::resize_file(path, off + fsize);
+
+    VertexType *file = static_cast<VertexType*>(mmap(NULL, fsize, PROT_READ | PROT_WRITE, MAP_SHARED, fd, off));
     if(file == MAP_FAILED) {
         cout << "mmap failed." << endl;
         cout << std::strerror(errno) << endl;
@@ -68,8 +74,13 @@ void write_to_file_binary(fs::path path, packed_edge* result, size_t nedges) {
     close(fd);
 }
 
-void write_to_file_text(fs::path path, packed_edge* result, size_t nedges) {
-    FILE *file = fopen(path.c_str(), "w");
+void write_to_file_text(fs::path path, packed_edge* result, size_t nedges, bool append) {
+    FILE *file;
+    if(append) {
+        file = fopen(path.c_str(), "a");
+    } else {
+        file = fopen(path.c_str(), "w");
+    }
     for (size_t i = 0; i < nedges; i++) {
         int64_t v[2];
         v[0] = get_v0_from_edge(result + i);
@@ -92,8 +103,9 @@ int main(int argc, char* argv[]) {
                     "{2}: data format, 'txt' for text, 'bin' for binary\n"
                     "{3}: file number, necessary when graph is large than filesize",
                     cxxopts::value<string>()->default_value("/data/Kron/Kron{0}-{1}/block-{3:02}.{2}"))
-        ("b,log_blocksize", "max number of edges be generated in a iteration, must fit in memory, also the max single file size",
+        ("b,log_blocksize", "max number of edges be generated in an iteration, must fit in memory",
                     cxxopts::value<int>()->default_value("30"))
+        ("s,single_file", "generate edges to single file, rather than one file per block")
         ("f,format", "output format (0: stdout, 1:binary, 2:text)", cxxopts::value<int>()->default_value("0"))
         ("S,short", "use 32bit int as vertex ID in binary format")
         ("v,info", "show debug messages")
@@ -118,6 +130,7 @@ int main(int argc, char* argv[]) {
     int64_t seed2 = opt["seed2"].as<uint64_t>();
     int64_t block_size = 1l << opt["log_blocksize"].as<int>();
     int64_t nblocks = desired_nedges / block_size + (desired_nedges % block_size != 0);
+    bool single_file = opt["single_file"].as<bool>();
 
     uint_fast32_t seed[5];
     make_mrg_seed(seed1, seed2, seed);
@@ -143,24 +156,26 @@ int main(int argc, char* argv[]) {
         }
 
         time_taken = omp_get_wtime();
+        bool append = single_file && i > 0;
+        int64_t fn = single_file ? 0 : i;
         fs::path path;
         switch (opt["format"].as<int>()) {
         case 0: // stdout
             write_to_stdout(edges, nblock_edges);
             break;
         case 1: // binary
-            path = fmt::format(path_format, log_numverts, nedges_per_verts, "bin", i);
+            path = fmt::format(path_format, log_numverts, nedges_per_verts, "bin", fn);
             fs::create_directories(path.parent_path());
             if(opt["short"].as<bool>()){
-                write_to_file_binary<uint32_t>(path, edges, nblock_edges);
+                write_to_file_binary<uint32_t>(path, edges, nblock_edges, append);
             } else {
-                write_to_file_binary<int64_t>(path, edges, nblock_edges);
+                write_to_file_binary<int64_t>(path, edges, nblock_edges, append);
             }
             break;
         case 2: // text
-            path = fmt::format(path_format, log_numverts, nedges_per_verts, "txt", i);
+            path = fmt::format(path_format, log_numverts, nedges_per_verts, "txt", fn);
             fs::create_directories(path.parent_path());
-            write_to_file_text(path, edges, nblock_edges);
+            write_to_file_text(path, edges, nblock_edges, append);
             break;
         default:
             cout << "wrong format." << endl;
