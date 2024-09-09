@@ -98,6 +98,7 @@ int main(int argc, char* argv[]) {
     options.add_options()
         ("n,log_numverts", "log2(#vertices)", cxxopts::value<int>())
         ("m,nedges_per_verts", "#edges per vertex", cxxopts::value<int>()->default_value("16"))
+        ("e,max_edges", "max #edges to generate, for graph with #edges < #vertices", cxxopts::value<int64_t>())
         ("o,path", "output file path, {n} is the wildcards and pass to the fmt::format, replacement rule: \n"
                     "{0}: log_numverts\n{1}: nedges_per_verts\n"
                     "{2}: data format, 'txt' for text, 'bin' for binary\n"
@@ -126,6 +127,9 @@ int main(int argc, char* argv[]) {
     int log_numverts = opt["n"].as<int>();
     int64_t nedges_per_verts = opt["m"].as<int>();
     int64_t desired_nedges = nedges_per_verts << log_numverts;
+    if(opt.count("e")) {
+        desired_nedges = min(desired_nedges, opt["e"].as<int64_t>());
+    }
     int64_t seed1 = opt["seed1"].as<uint64_t>();
     int64_t seed2 = opt["seed2"].as<uint64_t>();
     int64_t block_size = 1l << opt["log_blocksize"].as<int>();
